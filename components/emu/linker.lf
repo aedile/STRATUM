@@ -1,0 +1,7 @@
+[mapping:emu]
+archive: libemu.a
+entries:
+    digdug (noflash)
+    digdug_video (noflash)
+    digdug_sound (noflash)
+    Z80 (noflash)
