@@ -32,6 +32,8 @@ static const char *TAG = "INPUT";
 #define IMU_PERIOD_US 16000
 
 #define DIG_DEG        10.0f    /* tilt this far to move */
+#define VERT_DEG        8.0f    /* out-of-plane tilt is harder to hold steady */
+#define AXIS_STICK      1.5f    /* how much the other axis must beat the current one to take over */
 #define X_SIGN (-1.0f)          /* flip if left/right are reversed */
 #define Y_SIGN (-1.0f)          /* flip if forward/back are reversed */
 
@@ -40,6 +42,7 @@ static int64_t pwr_down_since, imu_last_us, coin_seq_start, last_log;
 static int coin_seq;                     /* 0 idle, 1 coin held, 2 gap, 3 start held */
 static float neutral_lr, neutral_ud, dbg_roll, dbg_pitch;
 static bool have_neutral;
+static int8_t last_axis;                 /* 0 none, 1 horizontal, 2 vertical */
 static int8_t dir_x, dir_y;              /* -1 / 0 / +1 */
 
 static void read_angles(float *lr, float *ud)
@@ -56,7 +59,7 @@ static void capture_neutral(void)
     if (!imu_ok) return;
     read_angles(&neutral_lr, &neutral_ud);
     have_neutral = true;
-    dir_x = dir_y = 0;
+    dir_x = dir_y = 0; last_axis = 0;
 }
 
 static inline float wrap_deg(float d)
@@ -135,13 +138,27 @@ void input_update(dd_input_t *in)
         float roll = wrap_deg(lr - neutral_lr) * X_SIGN;
         float pitch = wrap_deg(ud - neutral_ud) * Y_SIGN;
         dbg_roll = roll; dbg_pitch = pitch;
-        /* four-way: only the axis that is tilted further counts */
-        dir_x = dir_y = 0;
-        if (fabsf(roll) >= fabsf(pitch)) {
-            if (roll > DIG_DEG) dir_x = +1; else if (roll < -DIG_DEG) dir_x = -1;
-        } else {
-            if (pitch > DIG_DEG) dir_y = +1; else if (pitch < -DIG_DEG) dir_y = -1;
-        }
+        /*
+         * Four-way, and the axis is sticky. Picking whichever tilt is merely larger hands the
+         * moment to left/right whenever a bit of roll comes along with holding the medal
+         * tipped away from you - and then nothing happens at all, because that roll is often
+         * below the threshold itself. So an axis that clears its threshold alone wins
+         * outright, and when both clear it the one already in use keeps it until the other
+         * beats it by half again as much. Tipping out of the panel's plane is the harder
+         * motion to hold, so it gets the lower threshold.
+         */
+        int hx = (roll > DIG_DEG) ? +1 : (roll < -DIG_DEG) ? -1 : 0;
+        int vy = (pitch > VERT_DEG) ? +1 : (pitch < -VERT_DEG) ? -1 : 0;
+        int axis;
+        if (!hx && !vy)          axis = 0;
+        else if (!vy)            axis = 1;
+        else if (!hx)            axis = 2;
+        else if (last_axis == 1) axis = (fabsf(pitch) > fabsf(roll) * AXIS_STICK) ? 2 : 1;
+        else if (last_axis == 2) axis = (fabsf(roll) > fabsf(pitch) * AXIS_STICK) ? 1 : 2;
+        else                     axis = (fabsf(roll) > fabsf(pitch)) ? 1 : 2;
+        last_axis = (int8_t)axis;
+        dir_x = (axis == 1) ? (int8_t)hx : 0;
+        dir_y = (axis == 2) ? (int8_t)vy : 0;
     }
 
     in->left  = (dir_x < 0) ? 1 : 0;
